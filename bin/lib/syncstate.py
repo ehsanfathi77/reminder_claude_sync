@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,24 @@ from typing import Any
 
 
 VERSION = 1
+
+
+# GTD-engine metadata fence (see github.com/ehsanfathi77/reminder_claude_sync issue #N).
+# Layered tools may stamp a fenced YAML block at the top of a reminder's notes.
+# Stripping it here keeps the loop-prevention hash stable when the fence appears
+# or changes; the engine owns that block, the user owns the prose after it.
+_GTD_FENCE_RE = re.compile(
+    r"^\s*---\s*gtd\s*---.*?---\s*end\s*---\s*\n?",
+    re.DOTALL,
+)
+
+
+def _strip_gtd_fence(notes: str | None) -> str:
+    """Remove a leading `--- gtd --- ... --- end ---` block, if present.
+    Non-greedy + count=1 → strips only the first fence; user prose intact."""
+    if not notes:
+        return ""
+    return _GTD_FENCE_RE.sub("", notes, count=1)
 
 
 def _normalize_text(s: str | None) -> str:
@@ -47,7 +66,10 @@ def _canonical(d: dict[str, Any]) -> str:
     """Stable JSON projection used for hashing."""
     keep = {
         "title": _normalize_text(d.get("title")),
-        "notes": _normalize_text(d.get("notes")),
+        # Strip the GTD metadata fence first so engine-owned bytes don't
+        # contribute to the user-content hash (else every fence write would
+        # look like a content change and trigger the conflict path).
+        "notes": _normalize_text(_strip_gtd_fence(d.get("notes"))),
         # Truncate due to minute precision so we don't churn on second-level drift.
         "due_iso": (d.get("due_iso") or "")[:16],
         "completed": bool(d.get("completed", False)),
