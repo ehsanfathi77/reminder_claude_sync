@@ -1,0 +1,29 @@
+# Wiring this into Claude Code
+
+Drop a `CLAUDE.md` like the one below into the directory where you check out this repo (or wherever you keep your `TASKS.md`). Claude Code will read it on session start, learn the sync wrappers exist, and prefer them over raw `osascript` (which freezes Reminders.app).
+
+```markdown
+# Apple Reminders sync
+
+This directory is a workspace for operating on Apple Reminders as my primary task system. Reminders is the source of truth (iCloud, iOS, Watch). `TASKS.md` is a bidirectional mirror managed by [reminder_claude_sync](https://github.com/ehsanfathi77/reminder_claude_sync).
+
+## How to use Reminders from this session
+
+**Always use the sync wrappers, never raw `osascript`.** Raw AppleScript queries against Reminders.app take 1–2 minutes for ~150 reminders and freeze the UI. The wrappers use a Swift+EventKit binary that returns the same data in <1s without locking up the app.
+
+```bash
+bin/todo-pull       # refresh TASKS.md from Reminders (safe, never writes back)
+bin/todo-sync       # bidirectional — propagate local edits to Reminders
+bin/todo-status     # read-only summary
+```
+
+## Conventions
+
+- **Default list**: `Reminders` (system default).
+- When the user asks "what's on my plate" → run `bin/todo-pull` first, then read `TASKS.md`.
+- When adding a task: append a new line under `### <List>` in `TASKS.md` (no `rid` needed; `bin/todo-push` will create it in Reminders and backfill the rid).
+- When marking done: change `[ ]` → `[x]`, add `~~strikethrough~~`, then `bin/todo-push`.
+- **Never strip the trailing `<!-- rid:... -->` comment** — it's the round-trip identity.
+```
+
+That's enough for Claude Code to know how to use this repo as a Reminders bridge.

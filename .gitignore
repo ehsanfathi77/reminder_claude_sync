@@ -1,0 +1,29 @@
+# ── personal sync state (per-machine, contains your tasks) ──────────
+TASKS.md
+.sync-state.json
+.sync-conflicts.log
+
+# ── productivity-skill personal data ────────────────────────────────
+CLAUDE.md
+dashboard.html
+memory/
+
+# ── reference repos cloned for code study (each lives on its own remote) ──
+research/
+
+# ── make build clones keith/reminders-cli into vendor/ ──────────────
+vendor/
+
+# ── built binaries (rebuild with `make build`) ──────────────────────
+bin/reminders-cli
+
+# ── python / editor noise ───────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.vscode/
+.idea/
+
+# ── transient autopilot state ───────────────────────────────────────
+.omc/

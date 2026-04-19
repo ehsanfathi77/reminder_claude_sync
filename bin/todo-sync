@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Bidirectional sync.
+exec python3 "$(dirname "$0")/sync.py" sync "$@"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Reminders → TASKS.md (one-way; safe — no writes to Reminders).
+exec python3 "$(dirname "$0")/sync.py" pull "$@"
