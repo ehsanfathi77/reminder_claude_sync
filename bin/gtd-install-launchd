@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLIST_DIR="/Users/ehsanfathi/Documents/repos/todo/launchd"
+LAUNCH_AGENTS_DIR="/Users/ehsanfathi/Library/LaunchAgents"
+
+PLISTS=(
+    "com.eddy.gtd.engine.tick"
+    "com.eddy.gtd.review.friday"
+    "com.eddy.gtd.review.sunday"
+    "com.eddy.gtd.health"
+)
+
+failed=0
+
+for label in "${PLISTS[@]}"; do
+    plist_src="${PLIST_DIR}/${label}.plist"
+    plist_dst="${LAUNCH_AGENTS_DIR}/${label}.plist"
+
+    if [[ ! -f "${plist_src}" ]]; then
+        echo "ERROR: source plist not found: ${plist_src}"
+        failed=1
+        continue
+    fi
+
+    echo "Installing ${label} ..."
+
+    # Idempotent: bootout first if already loaded, then re-bootstrap
+    if launchctl print "gui/${UID}/${label}" &>/dev/null; then
+        echo "  Already loaded — booting out first"
+        launchctl bootout "gui/${UID}/${label}" || true
+    fi
+
+    cp "${plist_src}" "${plist_dst}"
+
+    if launchctl bootstrap "gui/${UID}" "${plist_dst}"; then
+        echo "  OK: bootstrapped ${label}"
+    else
+        echo "  ERROR: bootstrap failed for ${label}"
+        failed=1
+    fi
+done
+
+if [[ "${failed}" -ne 0 ]]; then
+    echo ""
+    echo "One or more plists failed to install."
+    exit 1
+fi
+
+echo ""
+echo "All GTD launchd agents installed successfully."

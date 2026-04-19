@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.eddy.gtd.review.friday</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/ehsanfathi/Documents/repos/todo/gtd/engine/cli.py</string>
+		<string>review</string>
+		<string>--prepare</string>
+		<string>friday_prep</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/ehsanfathi/Documents/repos/todo</string>
+
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>5</integer>
+		<key>Hour</key>
+		<integer>15</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>/Users/ehsanfathi/Documents/repos/todo/.gtd/log/launchd-tick.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/ehsanfathi/Documents/repos/todo/.gtd/log/launchd-tick.log</string>
+</dict>
+</plist>

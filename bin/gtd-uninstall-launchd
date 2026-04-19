@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+LAUNCH_AGENTS_DIR="/Users/ehsanfathi/Library/LaunchAgents"
+
+PLISTS=(
+    "com.eddy.gtd.engine.tick"
+    "com.eddy.gtd.review.friday"
+    "com.eddy.gtd.review.sunday"
+    "com.eddy.gtd.health"
+)
+
+for label in "${PLISTS[@]}"; do
+    plist_dst="${LAUNCH_AGENTS_DIR}/${label}.plist"
+
+    echo "Uninstalling ${label} ..."
+
+    # Bootout — tolerate if not loaded
+    if launchctl print "gui/${UID}/${label}" &>/dev/null; then
+        if launchctl bootout "gui/${UID}/${label}"; then
+            echo "  OK: booted out ${label}"
+        else
+            echo "  WARNING: bootout returned non-zero for ${label} (continuing)"
+        fi
+    else
+        echo "  Not loaded — skipping bootout"
+    fi
+
+    # Remove plist — tolerate if missing
+    if [[ -f "${plist_dst}" ]]; then
+        rm "${plist_dst}"
+        echo "  OK: removed ${plist_dst}"
+    else
+        echo "  Plist not found at ${plist_dst} — skipping removal"
+    fi
+done
+
+echo ""
+echo "GTD launchd agents uninstalled."
