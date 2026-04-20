@@ -18,7 +18,7 @@ from pathlib import Path
 DEFAULT_MANAGED_LISTS: frozenset[str] = frozenset({
     "Inbox",
     "@calls", "@computer", "@errands", "@home", "@anywhere", "@agenda",
-    "@nyc", "@jax", "@odita",
+    "@nyc", "@jax", "@odita", "@health", "@financials",
     "Waiting For", "Someday", "Projects", "Tickler", "Questions",
 })
 

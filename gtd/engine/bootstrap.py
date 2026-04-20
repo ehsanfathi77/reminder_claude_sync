@@ -24,6 +24,8 @@ _CANONICAL_ORDER: list[str] = [
     "@calls",
     "@computer",
     "@errands",
+    "@financials",
+    "@health",
     "@home",
     "@jax",
     "@nyc",

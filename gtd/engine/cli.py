@@ -144,7 +144,14 @@ def cmd_capture(args) -> int:
     dryrun = effective_dryrun(cfg) or getattr(args, "dry_run", False)
 
     text_arg = getattr(args, "text", None)
-    if text_arg:
+    # `text_arg is not None` distinguishes empty-string (`--text ""`) from
+    # the flag being absent. Empty-string is a user error — fail fast instead
+    # of silently falling through to stdin and hanging.
+    if text_arg is not None:
+        if not text_arg.strip():
+            print("capture: --text is empty; pass non-empty text or omit to read stdin.",
+                  file=sys.stderr)
+            return 2
         lines = [text_arg]
     else:
         _vprint(args, "[capture] reading from stdin (Ctrl-D to finish)...")
@@ -216,6 +223,13 @@ def cmd_next(args) -> int:
             time_min=time_min,
             energy=energy,
         )
+        if not actions:
+            label = ctx if ctx else "any context"
+            print(
+                f"No next actions in {label}. "
+                "Try /gtd:capture to add one or /gtd:status to check list counts."
+            )
+            return 0
         output = engage_mod.format_for_chat(actions)
         print(output)
     except Exception as exc:
@@ -233,6 +247,15 @@ def cmd_project(args) -> int:
     name = args.name
     outcome = getattr(args, "outcome", None)
     if not outcome:
+        # Non-interactive callers (chat shells, scripts, sync.py) MUST pass
+        # --outcome. Falling through to input() would hang forever on EOF.
+        if not sys.stdin.isatty():
+            print(
+                "project: --outcome required (non-interactive). "
+                "Run: gtd project <name> --outcome '<one-line outcome>'",
+                file=sys.stderr,
+            )
+            return 2
         try:
             outcome = input(f"Outcome for project '{name}': ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -258,24 +281,41 @@ def cmd_project(args) -> int:
 
 
 def cmd_project_next(args) -> int:
-    """projects.add_next_action(project_id, ctx, title)."""
+    """projects.add_next_action(project_id_or_name, ctx, title).
+
+    Accepts either a ULID or a project name as the first arg; resolves via
+    projects.lookup_by_name_or_ulid before adding the next action.
+    """
     import gtd.engine.projects as projects_mod
     cfg = load_config()
     dryrun = effective_dryrun(cfg) or getattr(args, "dry_run", False)
 
-    project_id = args.project_id
+    query = args.project_id  # arg name unchanged for backwards compat; can be ULID or name
     ctx = args.ctx
     title = args.title
 
-    _vprint(args, f"[project-next] project_id={project_id} ctx={ctx} title={title!r}")
+    _vprint(args, f"[project-next] query={query!r} ctx={ctx} title={title!r}")
 
     if dryrun:
-        print(f"[project-next] dryrun: would add next action {title!r} to {project_id} in {ctx}")
+        print(f"[project-next] dryrun: would add next action {title!r} to {query!r} in {ctx}")
         return 0
 
     conn = _open_db()
     try:
-        rid = projects_mod.add_next_action(project_id, ctx, title, conn=conn, log_dir=LOG_DIR)
+        try:
+            project = projects_mod.lookup_by_name_or_ulid(query, conn=conn)
+        except projects_mod.AmbiguousProjectName as exc:
+            print(f"project-next: {exc}", file=sys.stderr)
+            print("  Disambiguate by passing the ULID instead of the name.",
+                  file=sys.stderr)
+            return 2
+        except projects_mod.ProjectNotFound as exc:
+            print(f"project-next: {exc}", file=sys.stderr)
+            return 2
+
+        rid = projects_mod.add_next_action(
+            project["project_id"], ctx, title, conn=conn, log_dir=LOG_DIR,
+        )
         print(f"next-action created: {rid}")
     finally:
         conn.close()
@@ -354,8 +394,16 @@ def cmd_tickler(args) -> int:
 
     rid = args.rid
     list_name = args.list
-    release_at = args.release_at
+    raw_release_at = args.release_at
     target_list = getattr(args, "target_list", "Inbox")
+
+    # Validate at the boundary so users get a friendly error instead of a
+    # cryptic exception buried deep in tickler.park.
+    try:
+        release_at = tickler_mod.parse_release_date(raw_release_at)
+    except tickler_mod.InvalidReleaseDate as exc:
+        print(f"tickler: {exc}", file=sys.stderr)
+        return 2
 
     _vprint(args, f"[tickler] rid={rid} list={list_name} release_at={release_at} target={target_list}")
 
@@ -411,75 +459,60 @@ def cmd_status(args) -> int:
 
     conn = _open_db()
     try:
-        import gtd.engine.state as state_mod
         import gtd.engine.qchannel as qchannel_mod
         import gtd.engine.projects as projects_mod
 
-        # Per-list counts from items table
         rows = conn.execute(
             "SELECT list, COUNT(*) as cnt FROM items GROUP BY list ORDER BY list"
         ).fetchall()
 
         print("=== GTD Status ===")
-        print()
-        print("Lists:")
+
+        # 📦 Lists
+        print("\n📦 Lists")
         if rows:
             for row in rows:
-                print(f"  {row[0]:<30} {row[1]:>4} items")
+                print(f"   {row[0]:<28} {row[1]:>4} items")
         else:
-            print("  (no items in state.db)")
+            print("   (no items in state.db)")
 
-        # Open Qs
+        # ❓ Open Questions
+        print("\n❓ Open Questions")
         try:
             open_q = qchannel_mod.open_count(conn=conn)
-            print(f"\nOpen Questions:      {open_q}")
+            print(f"   {open_q}")
         except Exception:
-            print("\nOpen Questions:      (unavailable)")
+            print("   (unavailable)")
 
-        # Stalled projects
+        # ⚠️  Stalled Projects
+        print("\n⚠️  Stalled Projects")
         try:
             stalled = projects_mod.stalled_projects(conn=conn)
-            print(f"Stalled projects:    {len(stalled)}")
-            for p in stalled:
-                print(f"  - {p.get('project_id', '?')}: {p.get('outcome', '(no outcome)')}")
+            if not stalled:
+                print("   0")
+            else:
+                print(f"   {len(stalled)}")
+                for p in stalled:
+                    print(f"     - {p.get('project_id', '?')}: {p.get('outcome', '(no outcome)')}")
         except Exception:
-            print("Stalled projects:    (unavailable)")
+            print("   (unavailable)")
 
-        # Last review
+        # 🩺 Daemon Health (last review + last tick + lock holder)
+        print("\n🩺 Daemon Health")
         try:
             row = conn.execute(
                 "SELECT completed_at FROM reviews ORDER BY completed_at DESC LIMIT 1"
             ).fetchone()
             last_review = row[0] if row else "(never)"
-            print(f"Last review:         {last_review}")
+            print(f"   Last review:  {last_review}")
         except Exception:
-            print("Last review:         (unavailable)")
+            print("   Last review:  (unavailable)")
 
-        # Lock holder — skip self (status holds the lock while it reads).
-        if LOCK_PATH.exists():
-            try:
-                lock_text = LOCK_PATH.read_text().strip().splitlines()
-                if len(lock_text) >= 3:
-                    holder_pid = int(lock_text[0])
-                    if holder_pid != os.getpid():
-                        # Another daemon held the lock; report it.
-                        print(f"\nLock holder:         pid={lock_text[0]} since={lock_text[1]} ({lock_text[2]})")
-                    else:
-                        print("\nLock holder:         (none — engine idle)")
-                else:
-                    print("\nLock holder:         (none — engine idle)")
-            except Exception:
-                print("\nLock holder:         (unreadable)")
-        else:
-            print("\nLock holder:         (none — engine idle)")
-
-        # Last tick from engine.jsonl
         engine_log = LOG_DIR / "engine.jsonl"
+        last_tick = None
         if engine_log.exists():
             try:
-                lines = engine_log.read_text().splitlines()
-                last_tick = None
-                for line in reversed(lines):
+                for line in reversed(engine_log.read_text().splitlines()):
                     try:
                         obj = json.loads(line)
                         if obj.get("op") == "tick":
@@ -487,32 +520,360 @@ def cmd_status(args) -> int:
                             break
                     except (json.JSONDecodeError, KeyError):
                         continue
-                print(f"Last tick:           {last_tick or '(none recorded)'}")
             except Exception:
-                print("Last tick:           (unreadable)")
+                last_tick = "(unreadable)"
+        print(f"   Last tick:    {last_tick or '(none recorded)'}")
+
+        if LOCK_PATH.exists():
+            try:
+                lock_text = LOCK_PATH.read_text().strip().splitlines()
+                if len(lock_text) >= 3:
+                    holder_pid = int(lock_text[0])
+                    if holder_pid != os.getpid():
+                        print(f"   Lock holder:  pid={lock_text[0]} since={lock_text[1]} ({lock_text[2]})")
+                    else:
+                        print("   Lock holder:  (none — engine idle)")
+                else:
+                    print("   Lock holder:  (none — engine idle)")
+            except Exception:
+                print("   Lock holder:  (unreadable)")
         else:
-            print("Last tick:           (no engine.jsonl)")
+            print("   Lock holder:  (none — engine idle)")
 
     finally:
         conn.close()
     return 0
 
 
+# ── adopt: target-list → state.db kind/ctx mapping ─────────────────────────
+# Used in --apply phase. Targets not in this map are rejected.
+_ADOPT_TARGETS_BY_KIND: dict[str, str] = {
+    "@home": "next_action",
+    "@computer": "next_action",
+    "@calls": "next_action",
+    "@errands": "next_action",
+    "@anywhere": "next_action",
+    "@agenda": "next_action",
+    "@nyc": "next_action",
+    "@jax": "next_action",
+    "@odita": "next_action",
+    "@health": "next_action",
+    "@financials": "next_action",
+    "Waiting For": "waiting_for",
+    "Someday": "someday",
+    "Tickler": "tickler",
+    "Projects": "project",
+}
+
+
 def cmd_adopt(args) -> int:
-    """One-time legacy migration. Walks legacy lists and prompts user for GTD bucket."""
+    """Agent-in-the-loop legacy migration. Three modes:
+
+      gtd adopt
+        Discovery: enumerate non-GTD-managed Reminders lists with counts.
+
+      gtd adopt --confirm-list X
+        Suggest phase: emit one JSON object per open item in list X to stdout,
+        one per line: {"rid": "...", "name": "...", "body": "..."}. No rules,
+        no mutation. Caller (Claude) classifies each item and proposes a target
+        list, presents to the user for confirmation, then re-invokes with --apply.
+
+      gtd adopt --apply [--from FILE]
+        Apply phase: read JSON Lines {"rid": "...", "target_list": "@home"}
+        from FILE (or stdin if --from omitted), validate each target is in the
+        managed set, and move each reminder. State.db gets a row per moved item
+        with kind derived from target_list. Bypasses the v1 7-day dispatch_dryrun
+        gate (this is explicit user-confirmed input, not auto-dispatch). Honors
+        --dry-run to predict without writing.
+    """
+    from gtd.engine import bootstrap as bootstrap_mod
+    from gtd.engine import state as state_mod
+    from gtd.engine.observability import log as obs_log
+    from gtd.engine.write_fence import DEFAULT_MANAGED_LISTS, assert_writable
+
     confirm_list = getattr(args, "confirm_list", None)
+    apply_mode = getattr(args, "apply", False)
+    apply_from = getattr(args, "apply_from", None)
     dry_run = getattr(args, "dry_run", False)
 
-    if not confirm_list and not dry_run:
-        print(
-            "adopt: NO-OP — pass --confirm-list <ListName> to migrate a specific list.\n"
-            "       This prevents accidental bulk mutations of legacy data.",
-            file=sys.stderr,
-        )
+    if confirm_list and apply_mode:
+        print("adopt: --confirm-list and --apply are mutually exclusive.", file=sys.stderr)
+        return 2
+
+    # ── Apply phase ───────────────────────────────────────────────────────
+    if apply_mode:
+        return _adopt_apply(args, apply_from, dry_run, state_mod, obs_log,
+                            DEFAULT_MANAGED_LISTS, assert_writable)
+
+    # Both discovery and suggest need the current list set.
+    try:
+        all_lists = bootstrap_mod.existing_lists()
+    except Exception as exc:
+        print(f"adopt: failed to read Reminders lists: {exc}", file=sys.stderr)
+        return 2
+
+    legacy_lists = sorted(all_lists - DEFAULT_MANAGED_LISTS)
+
+    # ── Discovery mode ────────────────────────────────────────────────────
+    if not confirm_list:
+        print("=== Legacy lists (not GTD-managed) ===")
+        if not legacy_lists:
+            print("  (none — all Reminders lists are already managed)")
+            return 0
+
+        try:
+            import bin.lib.reminders as R
+            all_rems = R.list_all(days_done_window=0)
+            counts: dict[str, int] = {name: 0 for name in legacy_lists}
+            for rem in all_rems:
+                rl = getattr(rem, "list", None)
+                if rl in counts:
+                    counts[rl] += 1
+        except Exception as exc:
+            _vprint(args, f"[adopt] count probe failed: {exc}")
+            counts = {name: -1 for name in legacy_lists}
+
+        width = max(len(n) for n in legacy_lists)
+        for name in legacy_lists:
+            n = counts.get(name, -1)
+            label = "?" if n < 0 else str(n)
+            print(f"  {name:<{width}}  {label} item(s)")
+        print()
+        print("To migrate one:  gtd adopt --confirm-list <name>")
+        print("                 (Claude classifies → you confirm → gtd adopt --apply)")
         return 0
 
-    _vprint(args, f"[adopt] confirm_list={confirm_list} dry_run={dry_run}")
-    print(f"[adopt] {'dryrun: would migrate' if dry_run else 'migrating'} list: {confirm_list or '(none)'}")
+    # ── Suggest phase (--confirm-list NAME): emit items as JSON Lines ─────
+    if confirm_list in DEFAULT_MANAGED_LISTS:
+        print(
+            f"adopt: refusing to adopt {confirm_list!r} — it's already in the GTD-managed set.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if confirm_list not in all_lists:
+        print(f"adopt: {confirm_list!r} not found in Reminders.", file=sys.stderr)
+        if legacy_lists:
+            preview = ", ".join(legacy_lists[:10])
+            more = "" if len(legacy_lists) <= 10 else f" (+{len(legacy_lists)-10} more)"
+            print(f"       Available legacy lists: {preview}{more}", file=sys.stderr)
+        else:
+            print("       No legacy lists found. Run `gtd adopt` to discover.",
+                  file=sys.stderr)
+        return 2
+
+    try:
+        import bin.lib.reminders as R
+        all_rems = R.list_all(days_done_window=0)
+    except Exception as exc:
+        print(f"adopt: failed to enumerate reminders: {exc}", file=sys.stderr)
+        return 2
+
+    items = [
+        r for r in all_rems
+        if getattr(r, "list", None) == confirm_list
+        and not getattr(r, "completed", False)
+    ]
+
+    # Header to stderr so stdout stays a pure JSON-Lines stream.
+    print(
+        f"adopt: emitting {len(items)} item(s) from {confirm_list!r} as JSON Lines on stdout.",
+        file=sys.stderr,
+    )
+    print(
+        "       Caller should classify each, present to user, then pipe decisions to "
+        "`gtd adopt --apply` (or pass via --from FILE).",
+        file=sys.stderr,
+    )
+
+    valid_targets = sorted(_ADOPT_TARGETS_BY_KIND.keys())
+    print(
+        f"       Valid target_list values: {', '.join(valid_targets)}",
+        file=sys.stderr,
+    )
+
+    if not items:
+        return 0
+
+    for rem in items:
+        out = {
+            "rid": getattr(rem, "id", "") or "",
+            "name": getattr(rem, "name", "") or "",
+            "body": getattr(rem, "body", "") or "",
+            "source_list": confirm_list,
+        }
+        print(json.dumps(out, ensure_ascii=False))
+
+    return 0
+
+
+def _adopt_apply(
+    args,
+    apply_from,
+    dry_run: bool,
+    state_mod,
+    obs_log,
+    managed_lists,
+    assert_writable,
+) -> int:
+    """Read JSON Lines decisions and apply moves. See cmd_adopt docstring."""
+    if apply_from:
+        try:
+            text = Path(apply_from).read_text()
+        except OSError as exc:
+            print(f"adopt --apply: cannot read {apply_from!r}: {exc}", file=sys.stderr)
+            return 2
+    else:
+        if sys.stdin.isatty():
+            print(
+                "adopt --apply: no --from FILE and stdin is a TTY (nothing to read).",
+                file=sys.stderr,
+            )
+            return 2
+        text = sys.stdin.read()
+
+    decisions: list[dict] = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"adopt --apply: line {line_no}: invalid JSON: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(obj, dict) or "rid" not in obj or "target_list" not in obj:
+            print(
+                f"adopt --apply: line {line_no}: expected object with 'rid' and 'target_list'",
+                file=sys.stderr,
+            )
+            return 2
+        decisions.append(obj)
+
+    if not decisions:
+        print("adopt --apply: no decisions to apply.", file=sys.stderr)
+        return 0
+
+    # Validate targets up-front so a bad batch fails loudly before any moves.
+    for i, d in enumerate(decisions, 1):
+        tgt = d["target_list"]
+        if tgt not in _ADOPT_TARGETS_BY_KIND:
+            print(
+                f"adopt --apply: decision {i}: target_list {tgt!r} is not an "
+                f"adoptable managed list. Valid: {sorted(_ADOPT_TARGETS_BY_KIND.keys())}",
+                file=sys.stderr,
+            )
+            return 2
+        if tgt not in managed_lists:
+            print(
+                f"adopt --apply: decision {i}: target_list {tgt!r} unexpectedly "
+                "outside DEFAULT_MANAGED_LISTS. Refusing.",
+                file=sys.stderr,
+            )
+            return 2
+
+    counters = {"moved": 0, "errors": 0}
+
+    if dry_run:
+        for d in decisions:
+            print(f"[adopt --apply] dryrun: would move {d['rid']} → {d['target_list']}")
+        counters["moved"] = len(decisions)
+        obs_log("engine", log_dir=LOG_DIR, op="adopt_apply",
+                dry_run=True, **counters)
+        print(f"=== Adopt apply (dry-run) === moved={counters['moved']} errors=0")
+        return 0
+
+    import bin.lib.reminders as R
+    conn = _open_db()
+    try:
+        for d in decisions:
+            rid = d["rid"]
+            target = d["target_list"]
+            try:
+                assert_writable(rid, target)
+                R.move_to_list(rid, target)
+
+                kind = _ADOPT_TARGETS_BY_KIND[target]
+                ctx = target if target.startswith("@") else None
+                existing = state_mod.get_item_by_rid(conn, rid)
+                if existing is None:
+                    state_mod.insert_item(
+                        conn, rid=rid, kind=kind, list=target, ctx=ctx,
+                    )
+                else:
+                    cursor = conn.execute(
+                        "UPDATE items SET kind = ?, list = ?, ctx = ? WHERE rid = ?",
+                        (kind, target, ctx, rid),
+                    )
+                    conn.commit()
+                    # Silent-success guard: SQLite UPDATE with no matching rows
+                    # is not an error; without this check, schema drift or a
+                    # rid mismatch would print "moved" while leaving state.db
+                    # un-tracked. AC-TEST-14.
+                    if cursor.rowcount == 0:
+                        counters["errors"] += 1
+                        print(
+                            f"warning: state.db has no row for rid {rid}; "
+                            "reminder moved but state un-tracked.",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                counters["moved"] += 1
+                print(f"moved: {rid} → {target}")
+            except Exception as exc:
+                counters["errors"] += 1
+                print(f"error: {rid} → {target}: {exc}", file=sys.stderr)
+    finally:
+        conn.close()
+
+    obs_log("engine", log_dir=LOG_DIR, op="adopt_apply",
+            dry_run=False, **counters)
+    print(f"=== Adopt apply === moved={counters['moved']} errors={counters['errors']}")
+    return 0 if counters["errors"] == 0 else 1
+
+
+def cmd_clarifier(args) -> int:
+    """Decision-tree clarifier: walk Allen's gates on a single item.
+
+    Subcommands:
+      evaluate <text> [--json]  → run gates, print verdict + question.
+
+    NOTE: this CLI surface intentionally bypasses the auto_clarify layering
+    contract (per AC-CLAR-6) for debug/inspection use. Production callers
+    inside /gtd:adopt + /gtd:clarify only invoke `evaluate` AFTER auto_clarify
+    returned needs_user.
+    """
+    import gtd.engine.clarifier as clarifier_mod
+
+    sub = getattr(args, "clarifier_sub", None)
+    if sub != "evaluate":
+        print("clarifier: missing subcommand. Try: gtd clarifier evaluate '<text>'",
+              file=sys.stderr)
+        return 2
+
+    text = getattr(args, "text", None) or ""
+    if not text.strip():
+        print("clarifier evaluate: text is empty.", file=sys.stderr)
+        return 2
+
+    eval_result = clarifier_mod.evaluate(text)
+    as_json = getattr(args, "json", False)
+
+    if as_json:
+        print(json.dumps(eval_result.to_dict(), indent=2))
+        return 0
+
+    # Human-readable
+    print(f"verdict={eval_result.verdict.value}")
+    if eval_result.failed_gate:
+        print(f"failed_gate={eval_result.failed_gate}")
+        print(f"reason={eval_result.reason}")
+        print(f"proposed_question: {eval_result.proposed_question}")
+        if eval_result.recommended_disposition:
+            print(f"recommended_disposition={eval_result.recommended_disposition}")
+    else:
+        print(f"reason={eval_result.reason}")
     return 0
 
 
@@ -853,88 +1214,141 @@ def cmd_tick(args) -> int:
 # Argument parser construction
 # ---------------------------------------------------------------------------
 
+def _add_dry_run(subparser: argparse.ArgumentParser) -> None:
+    """Register --dry-run on a subparser using SUPPRESS so the subparser
+    default does NOT overwrite the global flag in the merged Namespace.
+
+    Pairs with the removal of the post-parse normalization in main(). With
+    SUPPRESS, args.dry_run is only set if the user passes the flag (at
+    either position). Handlers must read via getattr(args, 'dry_run', False).
+    """
+    subparser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="No-op mode; log only (also accepted as a global flag before subcommand)",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gtd",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--dry-run", action="store_true", help="No-op mode; log only")
+    p.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS,
+                   help="No-op mode; log only")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose per-step logging to stderr")
 
     sp = p.add_subparsers(dest="command", required=True, metavar="SUBCOMMAND")
 
     # init
-    sp.add_parser("init", help="Initialize state.db, config, log dir, provision lists")
+    init_p = sp.add_parser("init", help="Initialize state.db, config, log dir, provision lists")
+    _add_dry_run(init_p)
 
     # bootstrap
-    sp.add_parser("bootstrap", help="Idempotent: provision the 15 GTD lists")
+    boot_p = sp.add_parser("bootstrap", help="Idempotent: provision the 15 GTD lists")
+    _add_dry_run(boot_p)
 
     # capture
     cap = sp.add_parser("capture", help="Capture one or more items into Inbox")
     cap.add_argument("--text", "-t", help="Text to capture (omit to read from stdin)")
+    _add_dry_run(cap)
 
     # clarify
-    sp.add_parser("clarify", help="Interactive: process next inbox item")
+    clr_p = sp.add_parser("clarify", help="Interactive: process next inbox item")
+    _add_dry_run(clr_p)
 
     # next
     nxt = sp.add_parser("next", help="Show ranked next actions")
     nxt.add_argument("--ctx", help="Context filter, e.g. @home")
     nxt.add_argument("--time", type=int, metavar="MINUTES", help="Max minutes available")
     nxt.add_argument("--energy", choices=["low", "med", "high"], help="Energy level filter")
+    _add_dry_run(nxt)
 
     # project
     proj = sp.add_parser("project", help="Create a new project")
     proj.add_argument("name", help="Project name")
-    proj.add_argument("--outcome", "-o", help="One-line outcome statement")
+    proj.add_argument("--outcome", "-o", help="One-line outcome statement (required in non-interactive mode)")
+    _add_dry_run(proj)
 
     # project-next
     pnxt = sp.add_parser("project-next", help="Add a next action to a project")
-    pnxt.add_argument("project_id", help="Project ULID")
+    pnxt.add_argument("project_id", help="Project name or ULID (name lookup falls back to ULID)")
     pnxt.add_argument("ctx", help="Context list, e.g. @home")
     pnxt.add_argument("title", help="Next action title")
+    _add_dry_run(pnxt)
 
     # weekly-review
-    sp.add_parser("weekly-review", help="Run interactive weekly GTD review")
+    wr_p = sp.add_parser("weekly-review", help="Run interactive weekly GTD review")
+    _add_dry_run(wr_p)
 
     # waiting
     wait = sp.add_parser("waiting", help="Show or nudge waiting-for items")
     wait.add_argument("--nudge", action="store_true", help="Dispatch nudge Q(s)")
     wait.add_argument("--per-item", action="store_true", dest="per_item",
                       help="One Q per stale item (default: digest Q)")
+    _add_dry_run(wait)
 
     # tickler
     tick_p = sp.add_parser("tickler", help="Park a reminder in the tickler file")
     tick_p.add_argument("rid", help="Reminder ID to park")
     tick_p.add_argument("list", help="Current list of the reminder")
-    tick_p.add_argument("release_at", help="ISO datetime to release (e.g. 2026-05-01T09:00:00)")
+    tick_p.add_argument("release_at",
+                        help="Release date: YYYY-MM-DD (defaults to 09:00 local) or YYYY-MM-DDTHH:MM:SS")
     tick_p.add_argument("--target-list", default="Inbox", dest="target_list",
                         help="List to move to on release (default: Inbox)")
+    _add_dry_run(tick_p)
 
     # ask
     ask_p = sp.add_parser("ask", help="Dispatch a manual Q to the Questions list")
     ask_p.add_argument("prompt", help="Question text")
     ask_p.add_argument("--ref", help="Optional reference reminder ID")
+    _add_dry_run(ask_p)
 
     # status
-    sp.add_parser("status", help="Read-only dashboard: counts, Qs, projects, last review")
+    stat_p = sp.add_parser("status", help="Read-only dashboard: counts, Qs, projects, last review")
+    _add_dry_run(stat_p)
+
+    # clarifier
+    clr_p = sp.add_parser(
+        "clarifier",
+        help="GTD clarifier: walk Allen's actionable→outcome→next-action gates on an item",
+    )
+    clr_sub = clr_p.add_subparsers(dest="clarifier_sub", metavar="SUBCOMMAND")
+    clr_eval = clr_sub.add_parser("evaluate", help="Evaluate a single item's clarifier gates")
+    clr_eval.add_argument("text", help="The item title to evaluate (quote it)")
+    clr_eval.add_argument("--json", action="store_true",
+                          help="Emit ClarifyEvaluation as JSON")
+    _add_dry_run(clr_p)
 
     # adopt
-    adopt_p = sp.add_parser("adopt", help="One-time legacy migration (NO-OP unless --confirm-list)")
+    adopt_p = sp.add_parser(
+        "adopt",
+        help="Agent-in-the-loop legacy migration: discover | suggest (--confirm-list) | apply (--apply)",
+    )
     adopt_p.add_argument("--confirm-list", dest="confirm_list", metavar="LIST",
-                         help="Name of legacy list to migrate")
+                         help="Suggest phase: emit JSON Lines of items in LIST for the caller to classify")
+    adopt_p.add_argument("--apply", action="store_true",
+                         help="Apply phase: read JSON Lines decisions and move reminders")
+    adopt_p.add_argument("--from", dest="apply_from", metavar="FILE",
+                         help="With --apply: read decisions from FILE instead of stdin")
+    _add_dry_run(adopt_p)
 
     # dryrun-report
     dr = sp.add_parser("dryrun-report", help="US-020: compute verdicts on qchannel dispatch history")
     dr.add_argument("--days", type=int, default=7, help="Look-back window in days (default: 7)")
     dr.add_argument("--json", action="store_true", help="Output as JSON")
     dr.add_argument("--log-path", dest="log_path", help="Override path to qchannel.jsonl")
+    _add_dry_run(dr)
 
     # health
-    sp.add_parser("health", help="Sunday digest: check JSONL streams, dispatch alert if needed")
+    h_p = sp.add_parser("health", help="Sunday digest: check JSONL streams, dispatch alert if needed")
+    _add_dry_run(h_p)
 
     # tick (internal)
-    sp.add_parser("tick", help="[internal] 5-minute launchd tick")
+    tk_p = sp.add_parser("tick", help="[internal] 5-minute launchd tick")
+    _add_dry_run(tk_p)
 
     return p
 
@@ -956,6 +1370,7 @@ HANDLERS = {
     "tickler": cmd_tickler,
     "ask": cmd_ask,
     "status": cmd_status,
+    "clarifier": cmd_clarifier,
     "adopt": cmd_adopt,
     "dryrun-report": cmd_dryrun_report,
     "health": cmd_health,
@@ -967,9 +1382,11 @@ def main(argv: list[str] | None = None) -> int:
     p = _build_parser()
     args = p.parse_args(argv)
 
-    # Normalize --dry-run to args.dry_run
-    if not hasattr(args, "dry_run"):
-        args.dry_run = False
+    # NOTE: --dry-run is registered with default=argparse.SUPPRESS on both the
+    # global parser and every subparser. That means args.dry_run is set ONLY
+    # when the user passes the flag (at either position). All handlers must
+    # read it via getattr(args, "dry_run", False). Do NOT add a normalization
+    # helper here — it would mask SUPPRESS-pattern bugs (AC-TEST-13).
 
     handler = HANDLERS.get(args.command)
     if handler is None:

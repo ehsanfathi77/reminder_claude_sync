@@ -35,6 +35,7 @@ def release(
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -52,6 +53,76 @@ except ImportError:
 
 _TICKLER_LIST = "Tickler"
 _PAST_DUE_THRESHOLD_H = 24
+
+# Date-input validation for the user-facing /gtd:tickler command.
+# Accepts YYYY-MM-DD (date-only, defaulted to 09:00 in the user's local
+# timezone) and YYYY-MM-DDTHH:MM:SS (offset-naive → local; offset-aware →
+# preserved as given). Anything else raises InvalidReleaseDate so the CLI
+# can translate to a friendly error.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([+-]\d{2}:\d{2}|Z)?$"
+)
+_PARSE_HINT = "Use ISO YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."
+
+
+class InvalidReleaseDate(ValueError):
+    """Raised when a tickler release date can't be parsed."""
+
+    def __init__(self, raw: str):
+        self.raw = raw
+        super().__init__(f"invalid date {raw!r}. {_PARSE_HINT}")
+
+
+def _local_tz_for(dt_naive: datetime) -> timezone:
+    """Return a fixed-offset tzinfo matching the user's local TZ AT THAT moment.
+
+    Critical: the offset must be computed for the parsed date, not for `now`.
+    Otherwise a January date parsed in July (DST active) would get an EDT
+    offset instead of EST. Uses `time.mktime` + `localtime.tm_gmtoff` so DST
+    transitions are honored correctly.
+    """
+    import time as _time
+    ts = _time.mktime(dt_naive.timetuple())
+    lt = _time.localtime(ts)
+    return timezone(timedelta(seconds=lt.tm_gmtoff))
+
+
+def parse_release_date(s: str) -> str:
+    """Normalize a user-supplied release date to ISO 8601 with offset.
+
+    Accepts:
+      - 'YYYY-MM-DD'         → defaults to 09:00 in user's local timezone
+      - 'YYYY-MM-DDTHH:MM:SS' (offset-naive) → interpreted as local time
+      - 'YYYY-MM-DDTHH:MM:SS±HH:MM' or '...Z' (offset-aware) → preserved
+
+    Returns an offset-aware ISO string like '2026-06-01T09:00:00-04:00'.
+    Raises InvalidReleaseDate on anything else.
+    """
+    if not isinstance(s, str) or not s.strip():
+        raise InvalidReleaseDate(s if isinstance(s, str) else repr(s))
+    raw = s.strip()
+
+    if _DATE_ONLY_RE.match(raw):
+        try:
+            d = datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError as exc:
+            raise InvalidReleaseDate(raw) from exc
+        naive = d.replace(hour=9)
+        dt = naive.replace(tzinfo=_local_tz_for(naive))
+        return dt.isoformat(timespec="seconds")
+
+    if _DATETIME_RE.match(raw):
+        normalized = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise InvalidReleaseDate(raw) from exc
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_local_tz_for(dt))
+        return dt.isoformat(timespec="seconds")
+
+    raise InvalidReleaseDate(raw)
 
 
 def _now_utc() -> datetime:

@@ -555,12 +555,41 @@ def process_inbox(
 
                 if qchannel_module is not None:
                     suggestions = _build_suggestions(name)
+
+                    # Per AC-CLAR-7: invoke clarifier exactly once per
+                    # needs_user item to get the targeted question. Both
+                    # dispatch.prompt AND dispatch.payload are extended —
+                    # otherwise the iPhone reminder still says generic
+                    # "Clarify: <title>" and the user doesn't see the
+                    # specific gate-driven question.
+                    try:
+                        from gtd.engine.clarifier import evaluate as _clarifier_evaluate
+                        _eval = _clarifier_evaluate(reminder_dict)
+                        targeted_q = _eval.proposed_question
+                        gate = _eval.failed_gate
+                        rec_disp = _eval.recommended_disposition
+                    except Exception:
+                        targeted_q = None
+                        gate = None
+                        rec_disp = None
+
+                    if targeted_q:
+                        prompt_text = f"{name}: {targeted_q}"[:80]
+                    else:
+                        prompt_text = f"Clarify: {name}"[:80]
+
+                    payload = {"ref_rid": rid, "suggestions": suggestions}
+                    if gate:
+                        payload["failed_gate"] = gate
+                    if rec_disp:
+                        payload["recommended_disposition"] = rec_disp
+
                     qchannel_module.dispatch(
                         conn=conn,
                         rem_module=rem_module,
                         kind="clarify",
-                        prompt=f"Clarify: {name}"[:80],
-                        payload={"ref_rid": rid, "suggestions": suggestions},
+                        prompt=prompt_text,
+                        payload=payload,
                         ref_rid=rid,
                         dispatch_dryrun=dispatch_dryrun,
                         now=now,

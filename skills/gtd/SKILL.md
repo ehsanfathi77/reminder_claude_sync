@@ -73,6 +73,16 @@ Before using the GTD skill, ensure:
 - User replies; Claude moves the reminder to the target list and rewrites metadata.
 - Process continues until all inbox items are clarified.
 
+### Claude's job for /gtd:clarify
+
+When the user invokes `/gtd:clarify`, **you** are the interactive layer. The CLI doesn't prompt — you do.
+
+The flow is identical to `/gtd:adopt` (see `### Claude's job for /gtd:adopt`) with one substitution: the source list is `Inbox` instead of a legacy list. The clarifier loop, escalation menu, and project-creation chain all apply the same way.
+
+1. Read open Inbox items: `python3 gtd/engine/cli.py adopt --confirm-list Inbox` (the suggest path emits the same JSON-Lines format and works for any source list, including Inbox).
+2. For each item, follow the per-item flow from the adopt runbook (steps 2–5 there): clarifier evaluate → branch on verdict → loop with cap=2 → escalation menu if needed.
+3. Apply via the same Bash heredoc into `gtd adopt --apply` (no separate clarify-apply path; adopt-apply handles any source list including Inbox).
+
 **What NOT to do:**
 - Do NOT manually invoke `/gtd:clarify` while the engine is running (via launchd or background `tick` loop). The async path is: engine runs `tick` every 5 minutes, auto-clarifies what it can, and dispatches Q-reminders (on the iPhone) for ambiguous items. Clarify via the phone, then engine picks up answers. Manual `/gtd:clarify` in chat is for laptop-first workflows when you prefer sync chat interaction.
 
@@ -133,6 +143,15 @@ Before using the GTD skill, ensure:
 - Writes a memory stub to `memory/projects/<slug>.md` for Claude context on future invocations.
 - No next-actions created yet; you must use `/gtd:project-next` to add them.
 
+### Claude's job for /gtd:project
+
+When the user invokes `/gtd:project <name>` without an outcome, **you** elicit the outcome inline before calling the CLI.
+
+1. Look at the chat context: did the user already say what they want this project to achieve? If yes, propose that as the outcome and ask the user to confirm.
+2. If not, ask **one** question: `"What is the successful end-state for project <name>? (one line)"`.
+3. Once the user provides an outcome, call: `python3 gtd/engine/cli.py project "<name>" --outcome "<outcome>"`. Always pass `--outcome` — don't rely on the CLI's interactive prompt; it's gated to TTY-only and won't fire from the slash-command shell.
+4. Report the resulting `project_id` to the user.
+
 **What NOT to do:**
 - Do not create a project via `/gtd:project` and then manually add next-actions to other lists without linking them. The GTD invariant (every project has ≥1 open next action) is enforced by the engine. If you create a project but add no next-actions, the engine will dispatch a Q-reminder on next tick asking you to clarify.
 
@@ -192,6 +211,16 @@ Before using the GTD skill, ensure:
   7. **Review someday** — promote candidates or archive.
 - Writes agenda to `memory/reviews/2026-04-17.md` (timestamped by review date).
 - Creates a Q-reminder `Weekly Review — Fri Apr 17` on the iPhone with templated agenda.
+
+### Claude's job for /gtd:weekly-review
+
+The CLI side (`gtd weekly-review`) is mostly a snapshot writer. **You** drive the conversational walk through the six buckets:
+
+1. Run `gtd status` to get the snapshot. Read it back to the user.
+2. Walk the six buckets in order, one at a time. For each: read the relevant data (e.g., open Inbox count, stalled projects from `gtd status`, waiting-for items via `gtd waiting`), summarize, ask the user what to act on.
+3. For Bucket 2 (Inbox to zero), drive `/gtd:clarify` — see `### Claude's job for /gtd:clarify`.
+4. For Bucket 6 (stalled projects), if `gtd status` shows any, present each one and ask: revive (add next action) / close / leave. For "revive", drive `/gtd:project-next`.
+5. After the walk, append a short summary to `memory/reviews/<today>.md` (you write the file directly; the engine doesn't yet).
 
 **What NOT to do:**
 - Do not run `/gtd:weekly-review` while the engine's automated review prep is running (Friday 15:00 launchd job). Lock contention. **Workaround**: wait 5 minutes or run on a different day.
@@ -325,27 +354,130 @@ Before using the GTD skill, ensure:
 
 ### 11. `/gtd:adopt`
 
-**What it does:** One-time interactive migration of legacy lists into GTD buckets. Converts old lists (e.g., `Personal`, `Books to Read`) into GTD-compliant lists. Default is no-op until you explicitly confirm per list.
+**What it does:** Agent-in-the-loop migration of legacy lists into GTD buckets. Three modes: discover legacy lists, get a per-item classification batch from the engine, then apply a user-confirmed batch of moves. Rules-based auto-clarify is **deliberately not used** here — adoption is a one-shot human act, mediated by Claude.
 
-**Invocation:**
+**Invocations:**
 ```
-/gtd:adopt
+/gtd:adopt                              # discover legacy lists with counts
+/gtd:adopt --confirm-list Personal      # suggest phase: emit items as JSON
+/gtd:adopt --apply --from /tmp/plan.json   # apply phase: move per the plan
 ```
 
-**Args:** None.
+**Behavior — three phases:**
 
-**Behavior:**
-- Discovers non-GTD lists in Reminders (anything not in: Inbox, @contexts, Waiting For, Someday, Projects, Tickler, Questions, Reference).
-- For each legacy list, asks: "Migrate `Personal` into GTD? [yes/no/skip]".
-- If `yes`: moves reminders from `Personal` into appropriate GTD lists (using auto-clarify heuristics + Qs for ambiguous items).
-- If `skip`: leaves the list untouched (no-op for now).
-- Writes audit trail to `state.db.events` and `memory/reviews/adopt-<date>.md`.
+1. **Discover** (`gtd adopt`):
+   - Returns the names + open-item counts for every Reminders list NOT in the GTD-managed set (`DEFAULT_MANAGED_LISTS` in `gtd/engine/write_fence.py`).
+   - Read-only.
+
+2. **Suggest** (`gtd adopt --confirm-list X`):
+   - Validates X exists and is not already managed.
+   - Emits one JSON object per open item to **stdout** (header to stderr): `{"rid": "...", "name": "...", "body": "...", "source_list": "X"}`.
+   - No mutation.
+   - Claude's job: read these items, classify each (suggest a `target_list` from the valid set printed in the header), present the full batch to the user in chat for confirmation/editing, then write a decisions plan.
+
+3. **Apply** (`gtd adopt --apply [--from FILE]`):
+   - Reads JSON Lines `{"rid": "...", "target_list": "@home"}` from FILE or stdin.
+   - Validates every `target_list` is in the adoptable managed set (rejects up-front before any move).
+   - For each row: calls `bin.lib.reminders.move_to_list(rid, target_list)`, then upserts a `state.db.items` row with `kind` derived from the target (`@*` → next_action; `Waiting For` → waiting_for; `Someday` → someday; `Tickler` → tickler; `Projects` → project).
+   - Bypasses the v1 7-day `dispatch_dryrun` gate — this is explicit user-confirmed input, not auto-dispatch.
+   - Honors `--dry-run` (global flag, before subcommand) for true preview.
+   - Logs `op="adopt_apply"` to `engine.jsonl`.
+
+**Valid `target_list` values** (the adoptable managed set):
+`@home`, `@computer`, `@calls`, `@errands`, `@anywhere`, `@agenda`, `@nyc`, `@jax`, `@odita`, `Waiting For`, `Someday`, `Tickler`, `Projects`. Note: `Inbox` and `Questions` are deliberately excluded as targets.
+
+### Claude's job for /gtd:adopt
+
+When the user invokes `/gtd:adopt --confirm-list X`, **you** are the layered cognitive engine between the CLI's two phases. The CLI emits items; you walk the user through them **one at a time** with a **clarifier loop** for items that need it; you accumulate decisions; you pipe the final batch back via a Bash heredoc.
+
+**MANDATORY interactive UI**: every per-item question goes through the `AskUserQuestion` tool — never plain-text "yes / skip / done" prompts. The user clicks chips; cadence stays fast. (Saved as feedback memory after a real walk.)
+
+The clarifier runs **only after auto_clarify returns needs_user** (the layering contract — see `gtd/engine/clarifier.py` module docstring). For the adopt path you call it manually per item.
+
+**Per-item flow (repeat for each item, in source order):**
+
+1. **Suggest** (once, at the start of the walk) — run `python3 gtd/engine/cli.py adopt --confirm-list X`. **Capture stdout only.** Do NOT use `2>&1` or pipe stderr — the human-readable header on stderr will corrupt the apply input if it gets mixed in.
+2. **For each JSON-Lines item, evaluate** with the clarifier first:
+   ```bash
+   python3 gtd/engine/cli.py clarifier evaluate "<item title>" --json
+   ```
+   Parse the result. It has `verdict` (ACCEPT | NEEDS_QUESTION), `failed_gate`, `reason`, `proposed_question`, `recommended_disposition`.
+
+3. **Branch on verdict:**
+
+   **(a) ACCEPT** — the item is clarified enough. Propose a `target_list` based on:
+   - Action verbs (buy, sell, pay, fix, clean, file, call, email, schedule) → context list (`@errands`, `@home`, `@computer`, `@calls`)
+   - Reference / informational / books / courses / hobbies → `Someday`
+   - Delegated to a known person, or "make sure X happens" → `Waiting For`
+   - Use `memory/people/` and `memory/projects/` for context when names appear.
+
+   Show the user:
+   ```
+   N/TOTAL — "<item title>"
+      ✓ ACCEPT  → <proposed_target>  (<short rationale>)
+      yes / edit / skip ?
+   ```
+
+   **(b) NEEDS_QUESTION** — a gate failed. Show the user the gate name + reason + ask the canonical question. Round 1:
+   ```
+   N/TOTAL — "<item title>"
+      ⚠ gate=<failed_gate> failed
+      reason: <reason>
+      question: <proposed_question>
+      (or reply 'yes' to advance past this gate, or 'clear all' to accept as-is)
+   ```
+   Capture the user's reply. Interpret:
+   - `yes` / `obvious` → advance ONE gate only (treat just this gate as PASS, re-evaluate from the next gate)
+   - `clear all` (TWO words required — intentional friction) → skip remaining gates entirely, treat as ACCEPT
+   - free-text answer → **append the answer to the item title in memory only** (do NOT modify Reminders during the loop), re-run `clarifier evaluate` on the combined string
+   - `skip` / `quit` → see step 5
+
+   Round 2: same as round 1 but using the post-answer evaluation. **Cap is 2 rounds total** (initial + 1 retry). After cap, go to step 4.
+
+4. **Escalation menu** (only if hit the round cap without ACCEPT) — show the user 3 options. Default-highlight option (a) when G1 failed; option (b) when G2 or G3 failed:
+   ```
+   We've gone two rounds — pick one:
+     (a) Send to Someday          [recommended for non-actionable]
+     (b) Make this a Project (and define the first action together)
+     (c) Skip — leave in source list
+   ```
+   - (a) → use `Someday` as the target_list for this item.
+   - (b) → execute the **project-creation chain** (see step 4b below).
+   - (c) → drop this item from the batch (no `apply` write for it).
+
+   **Step 4b — project-creation chain (when user picks (b)):**
+   1. Ask: `"What does 'done' look like for this project?"` (the outcome statement).
+   2. Run `python3 gtd/engine/cli.py project "<original_item_title>" --outcome "<user_answer>"`. Capture the printed `project_id`.
+   3. Ask **once** (single-shot, NO re-entry into the clarifier loop): `"What's the very next physical step for this project?"`. Capture the answer verbatim as the next-action title.
+   4. Ask for context if not obvious: `"Which list — @home / @computer / @calls / @errands?"`.
+   5. Run `python3 gtd/engine/cli.py project-next "<project_id>" "<ctx>" "<next_action_title>"`.
+   6. Continue to the next item in the walk.
+
+5. **Quit / abort handling** (if user types `quit` / `stop` / Ctrl-C mid-loop): pause the walk. Ask: `"Apply the N items confirmed so far, or discard everything?"`. If apply: jump to step 6 with what's been collected. If discard: stop, leave source list untouched.
+
+6. **Apply confirmed decisions** — once every item has been walked (or the user halted with apply-so-far), summarize: `"Applying 18 decisions; 4 sent to Someday; 2 made into Projects; 0 skipped."`. Pipe the accumulated decisions to `gtd adopt --apply` via a single-quoted Bash heredoc:
+   ```bash
+   cat <<'EOF' | python3 gtd/engine/cli.py adopt --apply
+   {"rid": "ABC-123", "target_list": "@computer"}
+   {"rid": "DEF-456", "target_list": "@errands"}
+   EOF
+   ```
+   The single-quoted `<<'EOF'` disables shell variable/command interpolation; safe for any title.
+
+7. **Report** — surface the CLI's final `=== Adopt apply === moved=N errors=M` line. If `errors > 0`, also show any per-item `error:` lines from stderr.
 
 **What NOT to do:**
-- Do not run `/gtd:adopt` multiple times on the same list. First pass is idempotent; second pass may duplicate Q-reminders. **Fix**: check state.db; run once per list, then archive the audit log.
+- Do not present a markdown batch table for blanket approval. The user prefers item-by-item walks even for 20+ items.
+- Do not skip the clarifier evaluate step for items that look obvious — the clarifier's reasoning is part of what makes the experience feel intentional.
+- Do not re-enter the full clarifier loop inside the project-creation chain (step 4b.3 is single-shot — preserves the bound on user touches).
+- Do not modify Reminders during the loop — only at the final apply / project create.
+- Do not pipe stderr (`2>&1`) when capturing the suggest output.
+- Do not write a tempfile. Use the heredoc-stdin pattern.
+- Do not run apply without first running suggest in the same session — you need the canonical rids.
 
 **Common failure modes:**
-- Large legacy list (e.g., 100+ items in `Personal`). Adoption may dispatch 50+ Q-reminders, hitting the daily cap. **Workaround**: adopt in batches; split large lists into smaller migration groups.
+- User edits suggested targets in chat with typos like `@homw`. Validate before writing the plan; correct or ask.
+- A reminder gets deleted between suggest and apply (user touches their phone). `move_to_list` errors; the per-item failure is logged but the rest of the batch proceeds.
 
 ---
 

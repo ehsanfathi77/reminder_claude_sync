@@ -1,0 +1,32 @@
+{
+  "_doc": "Ground-truth fixture for the GTD clarifier (per AC-TEST-CL-2 + Phase 5 Step 0 in .omc/plans/gtd-clarifier-brain.md). Labels authored by user (Eddy) BEFORE clarifier.py is implemented, so the test cannot tautologically match its own implementation. Each item: the verdict + gate the clarifier should produce, given the title alone (no chat answers yet).",
+  "_verdict_enum": ["ACCEPT", "NEEDS_QUESTION", "ESCALATE"],
+  "_failed_gate_enum": ["actionable", "outcome_clear", "next_action_concrete", null],
+  "_disposition_enum": ["@home", "@computer", "@calls", "@errands", "@anywhere", "@agenda", "@nyc", "@jax", "@odita", "Waiting For", "Someday", "Tickler", "Projects"],
+  "items": [
+    {"text": "Vanguard", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "actionable", "expected_disposition": "Someday", "rationale": "Pure noun; no implied verb"},
+    {"text": "Fidelity", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "actionable", "expected_disposition": "Someday", "rationale": "Same as Vanguard"},
+    {"text": "File Verizon law suit", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "next_action_concrete", "expected_disposition": "Projects", "rationale": "G3c: file + lawsuit = legal proceedings (multi-step)"},
+    {"text": "Sell the audio stuff", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@errands", "rationale": "Single sell action; reasonable as one task", "expected_heuristic_miss": true, "miss_reason": "G2's 'stuff' vague-placeholder rule fires; user override (`yes`) handles in live flow"},
+    {"text": "Change the wine subscription address for both subscriptions", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@computer", "rationale": "Concrete admin task, online"},
+    {"text": "Start CompassionAI", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "next_action_concrete", "expected_disposition": "Projects", "rationale": "G3a: 'start' is a project-indicator verb"},
+    {"text": "Ups Amazon returns", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@errands", "rationale": "Drive to UPS = single physical action"},
+    {"text": "Buy a computer with Eugene list", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "outcome_clear", "expected_disposition": "Waiting For", "rationale": "G2: 'with Eugene list' implies dependency on Eugene's input"},
+    {"text": "Check the vision stuff for new frame", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "outcome_clear", "expected_disposition": "Projects", "rationale": "G2: 'vision stuff' too vague — what specifically?"},
+    {"text": "Buy the new keyboard", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@errands", "rationale": "Single buy action"},
+    {"text": "Finish team dog videos", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "next_action_concrete", "expected_disposition": "Projects", "rationale": "G3a: 'finish' is a project-indicator verb"},
+    {"text": "Coursera courses", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "actionable", "expected_disposition": "Someday", "rationale": "Pure noun; no verb"},
+    {"text": "Check the Amex statement", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@computer", "rationale": "Single review action"},
+    {"text": "Wrap up burning man expenses", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "next_action_concrete", "expected_disposition": "Projects", "rationale": "G3a: 'wrap up' is a project-indicator verb"},
+    {"text": "Clean the car", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@home", "rationale": "Single physical action"},
+    {"text": "Fix the ray ban glasses", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@errands", "rationale": "Take to optician = single action"},
+    {"text": "Fast reading", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "actionable", "expected_disposition": "Someday", "rationale": "Pure noun phrase; aspiration not action"},
+    {"text": "Mushroom growing", "expected_verdict": "NEEDS_QUESTION", "expected_failed_gate": "actionable", "expected_disposition": "Someday", "rationale": "Gerund-noun; hobby aspiration"},
+    {"text": "Pay the dental bill", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@computer", "rationale": "Concrete pay action online"},
+    {"text": "Check flagged emails", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@computer", "rationale": "Single review action"},
+    {"text": "Ask Mohsen if he has access to Stanford lectures", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@calls", "rationale": "Concrete ask action; @calls or @computer depending on medium"},
+    {"text": "Check if you can pay the massage cost with your FSA account", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "@computer", "rationale": "Single research action"},
+    {"text": "Make sure crown plaza refunds $150", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "Waiting For", "rationale": "Follow-up on existing delegation"},
+    {"text": "Make sure to get a refund from leetcode", "expected_verdict": "ACCEPT", "expected_failed_gate": null, "expected_disposition": "Waiting For", "rationale": "Follow-up on existing delegation"}
+  ]
+}

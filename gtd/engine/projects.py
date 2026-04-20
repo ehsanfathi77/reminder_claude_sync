@@ -80,12 +80,100 @@ try:
 except ImportError:
     Q = None  # type: ignore
 
+import re
+
 from gtd.engine.notes_metadata import parse_metadata, serialize_metadata
 from gtd.engine.observability import log as obs_log
 from gtd.engine.state import _ulid, insert_item, insert_project, projects_without_open_next_action
 from gtd.engine.write_fence import assert_writable
 
 _PROJECTS_LIST = "Projects"
+
+# Crockford-base32 ULID — 26 chars, [0-9A-HJKMNP-TV-Z], case-insensitive.
+_ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$")
+
+
+class ProjectNotFound(LookupError):
+    """Raised when neither name nor ULID lookup matches a Projects-list entry."""
+
+    def __init__(self, query: str):
+        self.query = query
+        super().__init__(f"project {query!r} not found")
+
+
+class AmbiguousProjectName(LookupError):
+    """Raised when a name lookup matches multiple projects."""
+
+    def __init__(self, query: str, matches: list[dict]):
+        self.query = query
+        self.matches = matches
+        ids = ", ".join(m.get("project_id", "?") for m in matches)
+        super().__init__(
+            f"project name {query!r} matches {len(matches)} projects: {ids}"
+        )
+
+
+def lookup_by_name_or_ulid(query: str, *, conn, rem_module=None) -> dict:
+    """Resolve a CLI-supplied project identifier to a project dict.
+
+    Tries ULID first (regex match against state.db); falls back to a
+    case-insensitive name match against the Projects-list reminder titles.
+
+    Returns: {'project_id': str, 'outcome': str, 'name': str, 'rid': str}
+
+    Raises:
+      ProjectNotFound          — neither ULID nor name resolves
+      AmbiguousProjectName     — name resolves to >1 project
+    """
+    if rem_module is None:
+        rem_module = R
+    if not isinstance(query, str) or not query.strip():
+        raise ProjectNotFound(query if isinstance(query, str) else repr(query))
+    q = query.strip()
+
+    # ULID path: cheap, definitive
+    if _ULID_RE.match(q):
+        row = conn.execute(
+            "SELECT project_id, outcome FROM projects WHERE project_id = ?", (q,)
+        ).fetchone()
+        if row is not None:
+            r = dict(row)
+            return {
+                "project_id": r["project_id"],
+                "outcome": r["outcome"],
+                "name": "",
+                "rid": "",
+            }
+        raise ProjectNotFound(q)
+
+    # Name path: walk Projects-list reminders, match title case-insensitively
+    if rem_module is None:
+        raise ProjectNotFound(q)
+    matches: list[dict] = []
+    q_lower = q.lower()
+    for rem in rem_module.list_all():
+        if getattr(rem, "list", None) != _PROJECTS_LIST:
+            continue
+        if getattr(rem, "completed", False):
+            continue
+        name = getattr(rem, "name", "") or ""
+        if name.lower() != q_lower:
+            continue
+        meta, _ = parse_metadata(getattr(rem, "body", "") or "")
+        pid = meta.get("id") or ""
+        outcome = meta.get("outcome", "") or ""
+        matches.append({
+            "project_id": pid,
+            "outcome": outcome,
+            "name": name,
+            "rid": getattr(rem, "id", "") or "",
+        })
+
+    if not matches:
+        raise ProjectNotFound(q)
+    if len(matches) > 1:
+        raise AmbiguousProjectName(q, matches)
+    return matches[0]
 
 
 # ---------------------------------------------------------------------------

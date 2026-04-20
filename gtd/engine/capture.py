@@ -41,6 +41,13 @@ from gtd.engine.write_fence import assert_writable
 _INBOX = "Inbox"
 
 
+class EmptyCaptureText(ValueError):
+    """Raised when capture is called with whitespace-only or empty text."""
+
+    def __init__(self):
+        super().__init__("capture text is empty")
+
+
 def capture(
     text: str,
     *,
@@ -50,6 +57,8 @@ def capture(
     now: datetime | None = None,
 ) -> str:
     """Create one Inbox reminder. Returns gtd_id."""
+    if not isinstance(text, str) or not text.strip():
+        raise EmptyCaptureText()
     if now is None:
         now = datetime.now(timezone.utc)
     now_iso = now.isoformat(timespec="seconds")

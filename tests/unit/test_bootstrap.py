@@ -24,7 +24,7 @@ from gtd.engine.write_fence import DEFAULT_MANAGED_LISTS  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ALL_15 = sorted(DEFAULT_MANAGED_LISTS)
+_ALL_LISTS = sorted(DEFAULT_MANAGED_LISTS)
 _CLI = Path("/fake/reminders-cli")
 
 
@@ -86,12 +86,12 @@ class TestExistingLists:
 
 
 # ---------------------------------------------------------------------------
-# provision_lists() — fresh (0 existing → all 15 created)
+# provision_lists() — fresh (0 existing → all (len(DEFAULT_MANAGED_LISTS)) created)
 # ---------------------------------------------------------------------------
 
 class TestProvisionFresh:
-    def test_all_15_created(self, tmp_path: Path):
-        call_results = [_make_show_result([])] + [_make_new_result()] * 15
+    def test_all_lists_created(self, tmp_path: Path):
+        call_results = [_make_show_result([])] + [_make_new_result()] * len(DEFAULT_MANAGED_LISTS)
 
         with patch("gtd.engine.bootstrap.subprocess.run", side_effect=call_results):
             result = provision_lists(
@@ -99,23 +99,23 @@ class TestProvisionFresh:
                 log_dir=tmp_path,
             )
 
-        assert len(result) == 15
+        assert len(result) == len(DEFAULT_MANAGED_LISTS)
         assert all(v == "created" for v in result.values()), result
 
     def test_second_call_all_exist(self, tmp_path: Path):
         # First call: none exist → all created
-        call_results_1 = [_make_show_result([])] + [_make_new_result()] * 15
+        call_results_1 = [_make_show_result([])] + [_make_new_result()] * len(DEFAULT_MANAGED_LISTS)
         with patch("gtd.engine.bootstrap.subprocess.run", side_effect=call_results_1):
             provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
-        # Second call: all 15 exist → 0 created
+        # Second call: all (len(DEFAULT_MANAGED_LISTS)) exist → 0 created
         all_names = list(DEFAULT_MANAGED_LISTS)
         with patch("gtd.engine.bootstrap.subprocess.run",
                    return_value=_make_show_result(all_names)):
             result2 = provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
         assert all(v == "exists" for v in result2.values()), result2
-        assert sum(1 for v in result2.values() if v == "exists") == 15
+        assert sum(1 for v in result2.values() if v == "exists") == len(DEFAULT_MANAGED_LISTS)
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +134,8 @@ class TestProvisionPartial:
 
         created = [k for k, v in result.items() if v == "created"]
         exists = [k for k, v in result.items() if v == "exists"]
-        assert len(created) == 7
-        assert len(exists) == 8
+        assert len(created) == len(missing)
+        assert len(exists) == len(existing)
         assert set(exists) == set(existing)
         assert set(created) == set(missing)
 
@@ -149,11 +149,11 @@ class TestIdempotent:
         all_names = list(DEFAULT_MANAGED_LISTS)
 
         # First run: none exist
-        first_results = [_make_show_result([])] + [_make_new_result()] * 15
+        first_results = [_make_show_result([])] + [_make_new_result()] * len(DEFAULT_MANAGED_LISTS)
         with patch("gtd.engine.bootstrap.subprocess.run", side_effect=first_results):
             first = provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
-        assert sum(1 for v in first.values() if v == "created") == 15
+        assert sum(1 for v in first.values() if v == "created") == len(DEFAULT_MANAGED_LISTS)
 
         # Second run: all exist
         with patch("gtd.engine.bootstrap.subprocess.run",
@@ -161,7 +161,7 @@ class TestIdempotent:
             second = provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
         assert sum(1 for v in second.values() if v == "created") == 0
-        assert sum(1 for v in second.values() if v == "exists") == 15
+        assert sum(1 for v in second.values() if v == "exists") == len(DEFAULT_MANAGED_LISTS)
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ class TestDryRun:
             )
 
         assert sum(1 for v in result.values() if v == "exists") == 5
-        assert sum(1 for v in result.values() if v == "skipped") == 10
+        assert sum(1 for v in result.values() if v == "skipped") == len(DEFAULT_MANAGED_LISTS) - 5
         assert sum(1 for v in result.values() if v == "created") == 0
 
 
@@ -228,7 +228,7 @@ class TestErrorPath:
 
         assert result[failing_name] == "error: permission denied"
         created = [k for k, v in result.items() if v == "created"]
-        assert len(created) == 14
+        assert len(created) == len(DEFAULT_MANAGED_LISTS) - 1
         assert failing_name not in created
 
     def test_error_message_contains_stderr(self, tmp_path: Path):
@@ -280,19 +280,19 @@ class TestLogLine:
             provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
         rec = self._read_engine_jsonl(tmp_path)[0]
-        assert rec["total"] == 15
+        assert rec["total"] == len(DEFAULT_MANAGED_LISTS)
         assert rec["created"] == 0
-        assert rec["exists"] == 15
+        assert rec["exists"] == len(DEFAULT_MANAGED_LISTS)
         assert rec["errors"] == 0
 
     def test_log_line_counts_correct_all_fresh(self, tmp_path: Path):
-        call_results = [_make_show_result([])] + [_make_new_result()] * 15
+        call_results = [_make_show_result([])] + [_make_new_result()] * len(DEFAULT_MANAGED_LISTS)
         with patch("gtd.engine.bootstrap.subprocess.run", side_effect=call_results):
             provision_lists(reminders_cli=_CLI, log_dir=tmp_path)
 
         rec = self._read_engine_jsonl(tmp_path)[0]
-        assert rec["total"] == 15
-        assert rec["created"] == 15
+        assert rec["total"] == len(DEFAULT_MANAGED_LISTS)
+        assert rec["created"] == len(DEFAULT_MANAGED_LISTS)
         assert rec["exists"] == 0
         assert rec["errors"] == 0
 
@@ -305,7 +305,7 @@ class TestLogLine:
         rec = self._read_engine_jsonl(tmp_path)[0]
         assert "details" in rec
         assert isinstance(rec["details"], dict)
-        assert len(rec["details"]) == 15
+        assert len(rec["details"]) == len(DEFAULT_MANAGED_LISTS)
         assert rec["details"] == result
 
     def test_log_line_has_ts_and_pid(self, tmp_path: Path):
@@ -342,7 +342,7 @@ class TestLogLine:
 
         rec = self._read_engine_jsonl(tmp_path)[0]
         assert rec["errors"] == 2
-        assert rec["created"] == 13
+        assert rec["created"] == len(DEFAULT_MANAGED_LISTS) - 2
 
     def test_two_runs_produce_two_log_lines(self, tmp_path: Path):
         all_names = list(DEFAULT_MANAGED_LISTS)

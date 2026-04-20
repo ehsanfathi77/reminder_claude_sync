@@ -11,7 +11,7 @@
 
 on run argv
     if (count of argv) < 3 then
-        return "ERROR: usage: update.applescript <id> <field> <value>"
+        error "usage: update.applescript <id> <field> <value>"
     end if
     set rid to item 1 of argv
     set fld to item 2 of argv
@@ -20,11 +20,13 @@ on run argv
     tell application "Reminders"
         set target to missing value
         try
-            -- direct lookup by id is fastest
-            set target to (first reminder whose id is rid)
+            -- AppleScript exposes id as `x-apple-reminder://<uuid>`; the
+            -- caller passes the bare UUID (as returned by reminders-cli's
+            -- externalId field), so we substring-match.
+            set target to (first reminder whose id contains rid)
         end try
         if target is missing value then
-            return "ERROR: reminder not found: " & rid
+            error "reminder not found: " & rid
         end if
 
         if fld is "name" then
@@ -51,10 +53,10 @@ on run argv
                 set targetList to list val
                 move target to targetList
             on error errMsg
-                return "ERROR: cannot move to list '" & val & "': " & errMsg
+                error "cannot move to list '" & val & "': " & errMsg
             end try
         else
-            return "ERROR: unknown field: " & fld
+            error "unknown field: " & fld
         end if
         return "OK"
     end tell

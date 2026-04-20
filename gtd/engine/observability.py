@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-STREAMS: tuple[str, ...] = ("engine", "qchannel", "clarify", "invariants")
+STREAMS: tuple[str, ...] = ("engine", "qchannel", "clarify", "invariants", "clarifier")
 DEFAULT_LOG_DIR = Path.home() / "Documents/repos/todo/.gtd/log"
 
 
