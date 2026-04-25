@@ -19,8 +19,9 @@ Before using the GTD skill, ensure:
 
 1. **`bin/reminders-cli` built** — Run `make build` at the repo root. This compiles the Swift CLI that talks to EventKit.
 2. **Reminders permission granted** — macOS will prompt Terminal/iTerm for Reminders access on first invocation. Grant it.
-3. **Legacy lists considered** — If you have old lists (`Personal`, `Books to Read`, etc.), decide whether to migrate them into GTD lists. Run `/gtd:adopt` once per list when ready (default: no-op until explicitly confirmed).
-4. **State database initialized** — Run `python3 gtd/engine/cli.py tick` once. The command is idempotent; it creates `.gtd/state.db` if missing and runs one engine tick. No error if it already exists.
+3. **iPhone Siri default list set to `Inbox`** — Open Settings → Reminders → Default List → tap **Inbox**. Without this, "Hey Siri, remind me to X" lands in the default `Reminders` list and bypasses clarify. This is the primary control. The engine ships an opt-in safety-net (`leak_capture`) that can drain a list into `Inbox` on every tick, but it is **disabled by default** because the `Reminders` list is yours for real time-based reminders. Enable only if you cannot change the iOS default — set `leak_capture_lists: ["Reminders"]` in `.gtd/config.json`. Doing so will move every non-tracked item in `Reminders` into `Inbox`.
+4. **Legacy lists considered** — If you have old lists (`Personal`, `Books to Read`, etc.), decide whether to migrate them into GTD lists. Run `/gtd:adopt` once per list when ready (default: no-op until explicitly confirmed).
+5. **State database initialized** — Run `python3 gtd/engine/cli.py tick` once. The command is idempotent; it creates `.gtd/state.db` if missing and runs one engine tick. No error if it already exists.
 
 ---
 

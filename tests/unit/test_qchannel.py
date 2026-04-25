@@ -153,8 +153,13 @@ def _now() -> datetime:
 
 
 def _dt(hour: int) -> datetime:
-    """Return a datetime at the given UTC hour today."""
-    return _now().replace(hour=hour, minute=0, second=0, microsecond=0)
+    """Return a datetime at the given *local* clock hour today (tz-aware).
+
+    Quiet-hours semantics are local-time (matching the user-facing config); the
+    helper builds a local-tz datetime so `_dt(23)` reads as 23:00 user-time.
+    """
+    local_now = datetime.now().astimezone()
+    return local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
 
 
 # ---------------------------------------------------------------------------

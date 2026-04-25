@@ -120,11 +120,15 @@ def _iso(dt: datetime) -> str:
 
 
 def _in_quiet_hours(now: datetime, quiet_start: int, quiet_end: int) -> bool:
-    """Return True if now.hour is in the quiet window (wrap-aware).
+    """Return True if now's *local* hour is in the quiet window (wrap-aware).
+
+    quiet_hours represents the user's clock-face night (e.g., 22:00–08:00 local).
+    A tz-aware `now` is converted to local time before the comparison; a naive
+    `now` is treated as already-local.
 
     E.g. quiet_start=22, quiet_end=8 → [22, 23, 0, 1, ..., 7] is quiet.
     """
-    h = now.hour
+    h = now.astimezone().hour if now.tzinfo is not None else now.hour
     if quiet_start < quiet_end:
         # Simple range: e.g. 2:00–8:00
         return quiet_start <= h < quiet_end

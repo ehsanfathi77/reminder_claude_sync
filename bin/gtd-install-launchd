@@ -23,6 +23,23 @@ for label in "${PLISTS[@]}"; do
         continue
     fi
 
+    # Guard: ProgramArguments[0] must NOT live under /Applications/Xcode.app/.
+    # Xcode's bundled Python lacks EventKit / Full Disk Access entitlements, so
+    # launchd-spawned ticks die with "Operation not permitted". Force the system
+    # Python at /usr/bin/python3 (TCC-approved via Terminal/iTerm) instead.
+    py_path=$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "${plist_src}" 2>/dev/null || true)
+    if [[ -z "${py_path}" ]]; then
+        echo "ERROR: could not read ProgramArguments[0] from ${plist_src}"
+        failed=1
+        continue
+    fi
+    if [[ "${py_path}" == /Applications/Xcode.app/* ]]; then
+        echo "ERROR: ${label}: ProgramArguments[0] points at Xcode's Python: ${py_path}"
+        echo "       Xcode's Python has no EventKit/FDA access; edit plist to use /usr/bin/python3."
+        failed=1
+        continue
+    fi
+
     echo "Installing ${label} ..."
 
     # Idempotent: bootout first if already loaded, then re-bootstrap

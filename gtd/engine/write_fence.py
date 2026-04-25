@@ -42,30 +42,46 @@ def assert_writable(
     *,
     allowed: set[str] | frozenset[str] | None = None,
     invariants_log: Path | None = None,
+    leak_source_lists: set[str] | frozenset[str] | None = None,
+    source_list: str | None = None,
 ) -> None:
     """Raise WriteScopeError if list_name not in allowed (default: DEFAULT_MANAGED_LISTS).
 
     Log the violation to invariants_log (if provided) before raising. The log
     receives a JSONL line with {ts, kind, rid, attempted_list, allowed_count}.
     If the log's parent directory does not exist it is created automatically.
+
+    Narrow leak-source bypass: when `leak_source_lists` is non-empty and
+    `source_list` is in it, the move is permitted iff `list_name` == "Inbox".
+    Used by gtd.engine.leak_capture to drain Siri's default-list captures into
+    Inbox without granting a general write-anywhere escape hatch.
     """
     effective = DEFAULT_MANAGED_LISTS if allowed is None else allowed
-    if list_name not in effective:
-        if invariants_log is not None:
-            invariants_log.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(
-                {
-                    "ts": datetime.now().isoformat(timespec="seconds"),
-                    "kind": "write_scope_violation",
-                    "rid": rid,
-                    "attempted_list": list_name,
-                    "allowed_count": len(effective),
-                },
-                default=str,
-            )
-            with invariants_log.open("a") as fh:
-                fh.write(line + "\n")
-        raise WriteScopeError(rid, list_name, effective)
+    if list_name in effective:
+        return
+    # Narrow leak-source bypass: source ∈ leak_source_lists AND dest == "Inbox".
+    if (
+        leak_source_lists
+        and source_list is not None
+        and source_list in leak_source_lists
+        and list_name == "Inbox"
+    ):
+        return
+    if invariants_log is not None:
+        invariants_log.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "kind": "write_scope_violation",
+                "rid": rid,
+                "attempted_list": list_name,
+                "allowed_count": len(effective),
+            },
+            default=str,
+        )
+        with invariants_log.open("a") as fh:
+            fh.write(line + "\n")
+    raise WriteScopeError(rid, list_name, effective)
 
 
 def is_writable(

@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  ProgramArguments[0] MUST be /usr/bin/python3 (system Python).
+	  Xcode's bundled Python (/Applications/Xcode.app/.../python3) lacks the
+	  EventKit + Full Disk Access entitlements launchd uses for this agent
+	  and dies with "Operation not permitted". bin/gtd-install-launchd
+	  guards against re-introducing the Xcode path.
+	-->
 	<key>Label</key>
 	<string>com.eddy.gtd.health</string>
 

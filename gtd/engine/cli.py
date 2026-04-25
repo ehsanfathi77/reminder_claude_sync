@@ -40,6 +40,13 @@ DEFAULT_CONFIG: dict = {
     "quiet_hours": [22, 8],
     "q_max_open": 3,
     "q_max_per_day": 8,
+    # Lists drained into Inbox on every tick by gtd.engine.leak_capture.
+    # Default [] = disabled. The "Reminders" list is yours to use for real
+    # reminders (time-based, alarm-bearing items). Set this to ["Reminders"]
+    # only as a safety-net drain when you cannot change the iOS Siri default
+    # list. The primary fix is iOS-side: Settings → Reminders → Default
+    # List → Inbox.
+    "leak_capture_lists": [],
 }
 
 
@@ -605,6 +612,16 @@ def cmd_adopt(args) -> int:
         return _adopt_apply(args, apply_from, dry_run, state_mod, obs_log,
                             DEFAULT_MANAGED_LISTS, assert_writable)
 
+    # Discovery and suggest both read live Reminders, which requires
+    # bin/reminders-cli. With --dry-run, skip enumeration: report intent
+    # and exit 0 so the path is testable without a built CLI.
+    if dry_run:
+        if confirm_list:
+            print(f"[adopt] dryrun: would emit JSON Lines for items in {confirm_list!r}")
+        else:
+            print("[adopt] dryrun: would enumerate legacy Reminders lists")
+        return 0
+
     # Both discovery and suggest need the current list set.
     try:
         all_lists = bootstrap_mod.existing_lists()
@@ -1047,6 +1064,71 @@ def cmd_dryrun_report(args) -> int:
     return 0 if all_green else 1
 
 
+_LAUNCHD_LABELS = (
+    "com.eddy.gtd.engine.tick",
+    "com.eddy.gtd.health",
+    "com.eddy.gtd.review.friday",
+    "com.eddy.gtd.review.sunday",
+)
+
+
+def _extract_program_arg0(plist_path: Path) -> str | None:
+    """Return ProgramArguments[0] from a plist using plutil, or None on failure."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["/usr/bin/plutil", "-extract", "ProgramArguments.0", "raw",
+             "-o", "-", str(plist_path)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    val = result.stdout.strip()
+    return val or None
+
+
+def _check_launchd_python_paths() -> list[str]:
+    """For each installed launchd agent, verify ProgramArguments[0] is
+    /usr/bin/python3 and matches the repo plist. Return a list of failure
+    messages (empty when all green)."""
+    failures: list[str] = []
+    home = Path.home()
+    live_dir = home / "Library/LaunchAgents"
+    repo_dir = ROOT / "launchd"
+
+    for label in _LAUNCHD_LABELS:
+        live = live_dir / f"{label}.plist"
+        if not live.exists():
+            # Not installed — out of scope for the python-path check; skip silently.
+            continue
+
+        live_py = _extract_program_arg0(live)
+        if live_py is None:
+            failures.append(f"launchd[{label}]: could not parse ProgramArguments[0] from {live}")
+            continue
+
+        if live_py != "/usr/bin/python3":
+            failures.append(
+                f"launchd[{label}]: ProgramArguments[0]={live_py!r} (expected /usr/bin/python3); "
+                f"edit {live} to use the system Python."
+            )
+        elif not os.access(live_py, os.X_OK):
+            failures.append(f"launchd[{label}]: {live_py} is not executable")
+
+        repo = repo_dir / f"{label}.plist"
+        if repo.exists():
+            repo_py = _extract_program_arg0(repo)
+            if repo_py is not None and repo_py != live_py:
+                failures.append(
+                    f"launchd[{label}]: live plist Python {live_py!r} differs from repo "
+                    f"plist Python {repo_py!r}; re-run bin/gtd-install-launchd."
+                )
+
+    return failures
+
+
 def cmd_health(args) -> int:
     """Sunday 18:00 weekly digest. Read all 4 JSONL streams, dispatch alert if needed."""
     _vprint(args, "[health] reading last 7 days of JSONL streams...")
@@ -1118,6 +1200,9 @@ def cmd_health(args) -> int:
         if baseline > 0 and p95 > 3 * baseline:
             failing_checks.append(f"engine: p95 tick {p95}ms > 3x baseline {baseline}ms")
 
+    # (e) python-path + plist-drift check across the live launchd agents.
+    failing_checks.extend(_check_launchd_python_paths())
+
     if not failing_checks:
         _vprint(args, "[health] all green — no alert dispatched")
         return 0
@@ -1170,6 +1255,21 @@ def cmd_tick(args) -> int:
             import gtd.engine.capture as capture_mod
         except Exception as exc:
             print(f"[tick] capture import error: {exc}", file=sys.stderr)
+
+        # 1.5 Drain capture leaks (Siri default-list → Inbox safety-net).
+        # Must precede clarify so drained items get processed in the same tick
+        # — one-tick latency instead of two.
+        _vprint(args, "[tick] step 1.5: leak_capture.drain")
+        try:
+            import gtd.engine.leak_capture as leak_mod
+            for leak_list in cfg.get("leak_capture_lists", []):
+                try:
+                    leak_mod.drain_leak_list(conn, leak_list, log_dir=LOG_DIR)
+                except Exception as exc:
+                    print(f"[tick] leak_capture({leak_list}) error: {exc}",
+                          file=sys.stderr)
+        except Exception as exc:
+            print(f"[tick] leak_capture import error: {exc}", file=sys.stderr)
 
         # 2. Clarify: process inbox
         _vprint(args, "[tick] step 2: clarify.process_inbox")

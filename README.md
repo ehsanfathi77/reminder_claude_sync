@@ -63,6 +63,14 @@ Optional — symlink the wrappers so `todo-pull`, `todo-push`, etc. are on your 
 make install       # symlinks bin/todo-* into ~/.local/bin
 ```
 
+### On your iPhone
+
+If you also use the GTD skill in this repo (`skills/gtd`), set the Siri default Reminders list to `Inbox`:
+
+> **Settings → Reminders → Default List → Inbox**
+
+Without this, "Hey Siri, remind me to X" lands in the default `Reminders` list, which the GTD engine doesn't scan. The engine ships an opt-in safety-net (`leak_capture`) that can drain a list into `Inbox` on every tick, but it is **disabled by default** because the `Reminders` list is yours for real time-based reminders. Fixing the iOS-side default is the primary control; only enable `leak_capture` (set `leak_capture_lists: ["Reminders"]` in `.gtd/config.json`) if you cannot change the iOS default.
+
 ---
 
 ## Use
